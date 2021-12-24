@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <unordered_set>
 #include <algorithm>
@@ -76,6 +77,8 @@ private:
         pickPhysicalDevice();
         createLogicalDevice();
         createSwapChain();
+        createSwapChainImageViews();
+        createGraphicsPipeline();
     }
 
     void createInstance() {
@@ -503,6 +506,65 @@ private:
                 throw std::runtime_error("failed to create an image view");
             }
         }
+    }
+
+    void createGraphicsPipeline() {
+        auto vertexShaderCode = readFile("shaders/shader.vert.spv");
+        auto fragmentShaderCode = readFile("shaders/shader.frag.spv");
+
+        VkShaderModule vertexShaderModule = createShaderModule(vertexShaderCode);
+        VkShaderModule fragmentShaderModule = createShaderModule(fragmentShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageCreateInfo{};
+        vertShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        // the stage we are defining is the vertex stage
+        vertShaderStageCreateInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageCreateInfo.module = vertexShaderModule;
+        // this is the entry point of this shader (means we can use the same shader module for multiple stages with
+        // different entry points)
+        vertShaderStageCreateInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageCreateInfo{};
+        fragShaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageCreateInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageCreateInfo.module = fragmentShaderModule;
+        fragShaderStageCreateInfo.pName = "main";
+
+        // an array of shader stages we can use later
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageCreateInfo, fragShaderStageCreateInfo};
+
+        // we destroy these at the end of the function since they're not what's executed, just what is used to make
+        // the machine code that actually will be executed
+        vkDestroyShaderModule(device, vertexShaderModule, nullptr);
+        vkDestroyShaderModule(device, fragmentShaderModule, nullptr);
+    }
+
+    VkShaderModule createShaderModule(const std::vector<char>& code) {
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        VkShaderModule shaderModule;
+        VkResult res;
+        if ((res = vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule)) != VK_SUCCESS) {
+            printf("Failed to create shader module (VkResult: %d)\n", res);
+            throw std::runtime_error("Failed to create shader module");
+        }
+        return shaderModule;
+    }
+
+    static std::vector<char> readFile(const std::string& filename) {
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open file!");
+        }
+        size_t fileSize = file.tellg();
+        std::vector<char> buffer(fileSize);
+        file.seekg(0);
+        file.read(buffer.data(), fileSize);
+        file.close();
+
+        return buffer;
     }
 
     void mainLoop() {
