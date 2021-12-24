@@ -38,6 +38,7 @@ private:
     VkSurfaceKHR surface;
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
+    std::vector<VkImageView> swapChainImageViews;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
 
@@ -474,6 +475,36 @@ private:
         swapChainExtent = extent;
     }
 
+    void createSwapChainImageViews() {
+        // create views so we can render to the image in our pipeline
+        for (const auto& image : swapChainImages) {
+            VkImageViewCreateInfo createInfo{};
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            createInfo.image = image;
+            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            createInfo.format = swapChainImageFormat;
+            // we can change stuff to only render into the R channel, but we will stick with defaults
+            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            // no mip-mapping since we're rendering this to framebuffer anyway
+            createInfo.subresourceRange.baseMipLevel = 0;
+            // only one level and layer since this isn't a stereo app
+            createInfo.subresourceRange.levelCount = 1;
+            createInfo.subresourceRange.baseArrayLayer = 0;
+            createInfo.subresourceRange.layerCount = 1;
+
+            VkImageView imageView;
+            VkResult res;
+            if ((res = vkCreateImageView(device, &createInfo, nullptr, &imageView)) != VK_SUCCESS) {
+                printf("failed to create an image view (VkResult: %d)\n", res);
+                throw std::runtime_error("failed to create an image view");
+            }
+        }
+    }
+
     void mainLoop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -481,6 +512,9 @@ private:
     }
 
     void cleanup() {
+        for (const auto& imageView : swapChainImageViews) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
         vkDestroySwapchainKHR(device, swapChain, nullptr);
         vkDestroyDevice(device, nullptr);
         vkDestroySurfaceKHR(instance, surface, nullptr);
