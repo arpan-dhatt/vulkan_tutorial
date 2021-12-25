@@ -36,12 +36,18 @@ private:
     VkQueue graphicsQueue;
     VkQueue presentQueue;
 
+    VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
+
+    VkCommandPool commandPool;
+    std::vector<VkCommandBuffer> commandBuffers;
 
     VkSurfaceKHR surface;
     VkSwapchainKHR swapChain;
     std::vector<VkImage> swapChainImages;
     std::vector<VkImageView> swapChainImageViews;
+    std::vector<VkFramebuffer> swapChainFramebuffers;
     VkFormat swapChainImageFormat;
     VkExtent2D swapChainExtent;
 
@@ -80,7 +86,11 @@ private:
         createLogicalDevice();
         createSwapChain();
         createSwapChainImageViews();
+        createRenderPass();
         createGraphicsPipeline();
+        createFramebuffers();
+        createCommandPool();
+        createCommandBuffers();
     }
 
     void createInstance() {
@@ -510,6 +520,51 @@ private:
         }
     }
 
+    void createRenderPass() {
+        // this is the output attachment that gets shown
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = swapChainImageFormat;
+        // no MSAA so we just do one sample
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+
+        // clears framebuffer when it's loaded for use in the render pass
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        // we want to store stuff into the framebuffer
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        // currently, don't care about these
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        // make sure the image is in presentable form
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        // now create a reference to this attachment that supports how we write to it from out frag shader
+        VkAttachmentReference colorAttachmentRef{};
+        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        // we need to reference a color attachment of this render pass
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorAttachmentRef;
+
+        // finally, we define the render pass that has the color attachments and subpasses (one of each for now)
+        VkRenderPassCreateInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &colorAttachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+
+        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create render pass!");
+        }
+
+    }
+
     void createGraphicsPipeline() {
         auto vertexShaderCode = readFile("shaders/shader.vert.spv");
         auto fragmentShaderCode = readFile("shaders/shader.frag.spv");
@@ -628,6 +683,28 @@ private:
             throw std::runtime_error("failed to create pipeline layout!");
         }
 
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        VkComputePipelineCreateInfo something{};
+        something.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        // counting programmable stages we are using
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        // filling in all the other necessary data
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.layout = pipelineLayout;
+        // we define this pipeline to be the first of one subpass of the entire render pass
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create graphics pipeline!");
+        }
+
         // we destroy these at the end of the function since they're not what's executed, just what is used to make
         // the machine code that actually will be executed
         vkDestroyShaderModule(device, vertexShaderModule, nullptr);
@@ -662,6 +739,97 @@ private:
         return buffer;
     }
 
+    void createFramebuffers() {
+        // we need one framebuffer from each image/imageview in our swapchain
+        swapChainFramebuffers.resize(swapChainImageViews.size());
+
+        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+            VkImageView attachments[] = {
+                    swapChainImageViews[i]
+            };
+
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            // making sure it's compatible with the color attachment of our render pass
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = 1;
+            framebufferInfo.pAttachments = attachments;
+            framebufferInfo.width = swapChainExtent.width;
+            framebufferInfo.height = swapChainExtent.height;
+            // one layer since we're not doing VR/AR fanciness
+            framebufferInfo.layers = 1;
+
+            if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to create framebuffer!");
+            }
+        }
+    }
+
+    void createCommandPool() {
+        QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+        // creating command pool we can use to create command buffers for the graphics queue
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create command pool!");
+        }
+    }
+
+    void createCommandBuffers() {
+        // we need multiple command buffers b/c we need one for each image in the swapchain
+        commandBuffers.resize(swapChainFramebuffers.size());
+
+        // telling the command pool to create N buffers and how to do so
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = (uint32_t) commandBuffers.size();
+
+        if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate command buffers!");
+        }
+
+        // now we must record what each command buffer does
+        for (size_t i = 0; i < commandBuffers.size(); i++) {
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+            if (vkBeginCommandBuffer(commandBuffers[i], &beginInfo) != VK_SUCCESS) {
+                throw std::runtime_error("failed to begin recording command buffer");
+            }
+
+            // this command buffer shall contain a render pass
+            VkRenderPassBeginInfo renderPassInfo{};
+            renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            renderPassInfo.renderPass = renderPass;
+            // specify which of the framebuffers we want to actually write to
+            renderPassInfo.framebuffer = swapChainFramebuffers[i];
+            renderPassInfo.renderArea.offset = {0, 0};
+            renderPassInfo.renderArea.extent = swapChainExtent;
+
+            // clear the framebuffer before rendering to it
+            VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+            renderPassInfo.clearValueCount = 1;
+            renderPassInfo.pClearValues = &clearColor;
+
+            vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+            vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+
+            vkCmdEndRenderPass(commandBuffers[i]);
+
+            if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to record command buffer!");
+            }
+        }
+    }
+
     void mainLoop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -669,7 +837,13 @@ private:
     }
 
     void cleanup() {
+        vkDestroyCommandPool(device, commandPool, nullptr);
+        for (const auto& framebuffer : swapChainFramebuffers) {
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+        }
+        vkDestroyPipeline(device, graphicsPipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
         for (const auto& imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr);
         }
